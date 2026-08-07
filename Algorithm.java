@@ -422,6 +422,48 @@ public class Algorithm {
     }
 
     // -------------------------------------------------------------------------
+    // Patient-level label export (additive — for ML pipeline work; does not
+    // feed back into, or alter, any of the calibrated aggregate simulation
+    // logic above). For each of the N baseline patients in dataset.csv,
+    // independently advances that one patient forward (no population
+    // replacement-on-death, since we want THIS patient's own trajectory, not
+    // steady-state population rates) and records whether/when they developed
+    // RA. No burn-in: burn-in exists only to pre-equilibrate the population
+    // for aggregate prevalence estimates; a fresh per-patient follow-up
+    // should start the clock at year 1, like a real prospective cohort.
+    // Uses its own dedicated RNG stream, so it cannot desynchronize the
+    // common-random-numbers scheme the drift comparisons in runSimulation()
+    // depend on.
+    // -------------------------------------------------------------------------
+    private static void exportPatientLabels(
+            int[] initAge, double[] initBmi, int[] initSmoker,
+            int[] initAllele, int[] initSex,
+            double drift, int horizonYears, String filename) throws Exception {
+
+        Random labelRng = new Random(20240101);
+
+        try (PrintWriter pw = new PrintWriter(new BufferedWriter(new FileWriter(filename)))) {
+            pw.println("id,age,bmi,smoker,alleleCount,sex,hasRA,yearsToOnset,diedFirst");
+            for (int i = 0; i < N; i++) {
+                Patient p = new Patient(initAge[i], initBmi[i], initSmoker[i], initAllele[i], initSex[i]);
+                boolean died = false;
+
+                for (int year = 1; year <= horizonYears && !died; year++) {
+                    p.advanceOneYear(year, labelRng, drift);
+                    double qx = QX[Math.min(p.age, 99)];
+                    if (p.condition) qx = Math.min(qx * RA_SMR, 1.0);
+                    if (labelRng.nextDouble() < qx) died = true;
+                }
+
+                pw.printf("%0" + ID_LEN + "d,%d,%.6f,%d,%d,%d,%d,%d,%d%n",
+                    i + 1, initAge[i], initBmi[i], initSmoker[i], initAllele[i], initSex[i],
+                    p.condition ? 1 : 0, p.diagnosisYear, died ? 1 : 0);
+            }
+        }
+        System.out.println("Patient-level labels exported: " + filename);
+    }
+
+    // -------------------------------------------------------------------------
     // Per-simulation runner (one thread per drift value)
     // -------------------------------------------------------------------------
     private static void runSimulation(
@@ -704,6 +746,14 @@ public class Algorithm {
             initSex[i]    = seed[i].sex;
         }
         seed = null; // allow GC — no longer needed
+
+        // Additive: export per-patient RA labels (id, baseline features, hasRA,
+        // yearsToOnset) for ML pipeline work. Independent of, and does not
+        // affect, the aggregate drift simulations below. See
+        // exportPatientLabels() for why it doesn't share their burn-in or
+        // replacement-on-death mechanics.
+        exportPatientLabels(initAge, initBmi, initSmoker, initAllele, initSex,
+            0.0, YEARS, "labels_drift_0.0.csv");
 
         // Run drift simulations sequentially — inner bootstrap already uses all cores
         for (int si = 0; si < BMI_DRIFTS.length; si++)
