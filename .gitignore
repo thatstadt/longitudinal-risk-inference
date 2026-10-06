@@ -4,3 +4,4 @@ Data/dataset.csv
 
 # Per-patient label export (exportPatientLabels) — same reason, 342MB.
 Data/labels_drift_0.0.csv
+*.class
